@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <glm/ext/vector_float2_precision.hpp>
 #include <glm/glm.hpp>
+#include <iostream>
 #include <print>
 #include <stdexcept>
 
@@ -12,9 +13,8 @@ static constexpr GLint WIDTH = 1280;
 static constexpr GLint HEIGHT = 720;
 
 struct State {
-  glm::vec2 center;
+  glm::vec2 center{0.0f, 0.0f};
   float zoom{1.0f};
-  float dt;
   GLuint image;
   GLuint array;
   struct {
@@ -34,12 +34,13 @@ static constexpr std::array<GLuint, 6> QUAD_INDICES{
     3, 1, 0, //
 };
 
-static inline auto key_callback(GLFWwindow *window, int key, int scancode,
-                                int action, int mods) -> void;
+static inline auto process_keyboard_input(GLFWwindow *window, State &state,
+                                          double delta_time) -> void;
 static inline auto scroll_callback(GLFWwindow *window, double xoffset,
                                    double yoffset) -> void;
 static inline auto display_screen_quad(State const &state) -> void;
 static inline auto compute_mandel_image(State const &state) -> void;
+static inline auto setup_opengl_debug_context() -> void;
 
 int main() {
   gl::ResourceManager resources;
@@ -52,6 +53,7 @@ int main() {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
   glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
+  glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
   GLFWwindow *window =
       glfwCreateWindow(WIDTH, HEIGHT, "MandelGL Explorer", nullptr, nullptr);
@@ -60,7 +62,7 @@ int main() {
     throw std::runtime_error("Failed to create GLFW window");
   }
   glfwMakeContextCurrent(window);
-  // glfwSwapInterval(0);
+  glfwSwapInterval(0);
 
   auto const &status = glewInit();
   if (status != GLEW_OK and status != GLEW_ERROR_NO_GLX_DISPLAY) {
@@ -68,13 +70,14 @@ int main() {
     glfwTerminate();
     throw std::runtime_error("Failed to initialize GLEW");
   }
+  setup_opengl_debug_context();
+
   std::println("[INFO] OpenGL Version: {}",
                reinterpret_cast<const char *>(glGetString(GL_VERSION)));
   glViewport(0, 0, WIDTH, HEIGHT);
 
   State state;
   glfwSetWindowUserPointer(window, &state);
-  glfwSetKeyCallback(window, key_callback);
   glfwSetScrollCallback(window, scroll_callback);
 
   state.programs.render =
@@ -109,6 +112,8 @@ int main() {
   int fps_counter{0};
 
   while (not glfwWindowShouldClose(window)) {
+    glfwPollEvents();
+
     auto const &current_frame = glfwGetTime();
     delta_time = current_frame - last_frame;
     last_frame = current_frame;
@@ -122,11 +127,10 @@ int main() {
     }
     fps_counter++;
 
-    state.dt = delta_time;
+    process_keyboard_input(window, state, delta_time);
     compute_mandel_image(state);
     display_screen_quad(state);
 
-    glfwPollEvents();
     glfwSwapBuffers(window);
   }
 
@@ -162,24 +166,118 @@ auto display_screen_quad(State const &state) -> void {
   glDrawElements(GL_TRIANGLES, QUAD_INDICES.size(), GL_UNSIGNED_INT, nullptr);
 }
 
-auto key_callback(GLFWwindow *window, int key, int, int action, int) -> void {
-  auto &state = *reinterpret_cast<State *>(glfwGetWindowUserPointer(window));
-  const auto SPEED = 10.0 / state.zoom;
-  if ((key == GLFW_KEY_UP or key == GLFW_KEY_W) and action == GLFW_PRESS) {
-    state.center.y += state.dt * SPEED;
+auto process_keyboard_input(GLFWwindow *window, State &state, double delta_time)
+    -> void {
+  auto const speed = static_cast<float>(10.0 * delta_time / state.zoom);
+  if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS ||
+      glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+    state.center.y += speed;
   }
-  if ((key == GLFW_KEY_DOWN or key == GLFW_KEY_S) and action == GLFW_PRESS) {
-    state.center.y -= state.dt * SPEED;
+  if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS ||
+      glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+    state.center.y -= speed;
   }
-  if ((key == GLFW_KEY_RIGHT or key == GLFW_KEY_D) and action == GLFW_PRESS) {
-    state.center.x += state.dt * SPEED;
+  if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS ||
+      glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+    state.center.x += speed;
   }
-  if ((key == GLFW_KEY_LEFT or key == GLFW_KEY_A) and action == GLFW_PRESS) {
-    state.center.x -= state.dt * SPEED;
+  if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS ||
+      glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+    state.center.x -= speed;
   }
 }
 
 auto scroll_callback(GLFWwindow *window, double, double yoffset) -> void {
   auto &state = *reinterpret_cast<State *>(glfwGetWindowUserPointer(window));
   state.zoom = std::clamp(state.zoom + yoffset * 5.0f, 1.0, 100000.0);
+}
+
+static inline auto APIENTRY gl_debug_output(GLenum source, GLenum type,
+                                            unsigned int id, GLenum severity,
+                                            GLsizei length, const char *message,
+                                            const void *) -> void {
+  // ignore non-significant error/warning codes
+  if (id == 131169 || id == 131185 || id == 131218 || id == 131204)
+    return;
+
+  std::cerr << "---------------" << std::endl;
+  std::cerr << "Debug message (" << id << "): " << message << std::endl;
+
+  switch (source) {
+  case GL_DEBUG_SOURCE_API:
+    std::cerr << "Source: API";
+    break;
+  case GL_DEBUG_SOURCE_WINDOW_SYSTEM:
+    std::cerr << "Source: Window System";
+    break;
+  case GL_DEBUG_SOURCE_SHADER_COMPILER:
+    std::cerr << "Source: Shader Compiler";
+    break;
+  case GL_DEBUG_SOURCE_THIRD_PARTY:
+    std::cerr << "Source: Third Party";
+    break;
+  case GL_DEBUG_SOURCE_APPLICATION:
+    std::cerr << "Source: Application";
+    break;
+  case GL_DEBUG_SOURCE_OTHER:
+    std::cerr << "Source: Other";
+    break;
+  }
+  std::cerr << std::endl;
+
+  switch (type) {
+  case GL_DEBUG_TYPE_ERROR:
+    std::cerr << "Type: Error";
+    break;
+  case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+    std::cerr << "Type: Deprecated Behaviour";
+    break;
+  case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+    std::cerr << "Type: Undefined Behaviour";
+    break;
+  case GL_DEBUG_TYPE_PORTABILITY:
+    std::cerr << "Type: Portability";
+    break;
+  case GL_DEBUG_TYPE_PERFORMANCE:
+    std::cerr << "Type: Performance";
+    break;
+  case GL_DEBUG_TYPE_MARKER:
+    std::cerr << "Type: Marker";
+    break;
+  case GL_DEBUG_TYPE_PUSH_GROUP:
+    std::cerr << "Type: Push Group";
+    break;
+  case GL_DEBUG_TYPE_POP_GROUP:
+    std::cerr << "Type: Pop Group";
+    break;
+  case GL_DEBUG_TYPE_OTHER:
+    std::cerr << "Type: Other";
+    break;
+  }
+  std::cerr << std::endl;
+
+  switch (severity) {
+  case GL_DEBUG_SEVERITY_HIGH:
+    std::cerr << "Severity: high";
+    break;
+  case GL_DEBUG_SEVERITY_MEDIUM:
+    std::cerr << "Severity: medium";
+    break;
+  case GL_DEBUG_SEVERITY_LOW:
+    std::cerr << "Severity: low";
+    break;
+  case GL_DEBUG_SEVERITY_NOTIFICATION:
+    std::cerr << "Severity: notification";
+    break;
+  }
+  std::cerr << std::endl;
+  std::cerr << std::endl;
+}
+
+auto setup_opengl_debug_context() -> void {
+  glEnable(GL_DEBUG_OUTPUT);
+  glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+  glDebugMessageCallback(gl_debug_output, nullptr);
+  glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr,
+                        GL_TRUE);
 }
